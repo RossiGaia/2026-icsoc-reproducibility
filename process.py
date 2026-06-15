@@ -60,10 +60,9 @@ class Processing:
         state_max_size=None,
         worker=0,
         work=0,
-        use_mongo=False,
-        mongo_url,
-        mongo_db,
-        mongo_collection,
+        mongo_url: str,
+        mongo_db: str,
+        mongo_collection: str,
         config: ProcessingConfig | None = None,
         messages_buffer,
     ):
@@ -73,16 +72,14 @@ class Processing:
         self.running = True
         self.conveyor_params = VirtualizedConveyorPlant()
         self.state_max_size = state_max_size
-        self.odte = None
+        self.odte: float = 0.0
         self.lock = threading.Lock()
         self.transmitted_state = {}
         self.burn_worker = worker
         self.burn_work = work
         self.burn_queue = queue.Queue(maxsize=self.burn_worker * 2)
         self.burn_threads = []
-        self.processing_seq_no = 0
         self.last_transmitted_processing_seq_no = -1
-        self.use_mongo = use_mongo
         self.mongo_url = mongo_url
         self.mongo_db = mongo_db
         self.mongo_collection = mongo_collection
@@ -90,12 +87,11 @@ class Processing:
         self.odte_t = threading.Thread(target=self.odte_computation, daemon=True)
         self.messages_buffer = messages_buffer
         self.burn_feeder_t = threading.Thread(target=self.burn_feeder_loop, daemon=True)
-        if self.use_mongo:
-            try:
-                self.mongo_client = pymongo.MongoClient(self.mongo_url)
-            except:
-                logger.error("Could not connect to mongo.")
-                sys.exit(1)
+        try:
+            self.mongo_client = pymongo.MongoClient(self.mongo_url)
+        except:
+            logger.error("Could not connect to mongo.")
+            sys.exit(1)
 
         if self.burn_worker > 0 and self.burn_work > 0:
             for i in range(self.burn_worker):
@@ -168,8 +164,7 @@ class Processing:
         snap["recv_timestamp"] = raw_msg["recv_timestamp"]
         snap["creation_timestamp"] = payload["creation_timestamp"]
         snap["key"] = raw_msg["key"]
-        snap["seq_id"] = self.processing_seq_no
-        self.processing_seq_no += 1
+        snap["seq_id"] = raw_msg.get("commit_seq_no")
         return snap
 
     def _add_derived_metrics(self, snap: dict) -> None:
@@ -391,49 +386,24 @@ class Processing:
         logger.info(f"Serialization took {serialization_time} seconds.")
         return state
 
-    def deserialize_state(self, serialized_state):
-        start_time = time.time()
-        with self.lock:
-            try:
-                connection_buffer_maxlen = serialized_state["connection_buffer_maxlen"]
-                processing_buffer_maxlen = serialized_state["processing_buffer_maxlen"]
-                self.connection_buffer = collections.deque(
-                    serialized_state["connection_buffer"],
-                    maxlen=connection_buffer_maxlen,
-                )
-                self.processing_buffer = collections.deque(
-                    serialized_state["processing_buffer"],
-                    maxlen=processing_buffer_maxlen,
-                )
-                self.conveyor_params = VirtualizedConveyorPlant(
-                    **serialized_state["conveyor_params"]
-                )
-                self.state_max_size = serialized_state["state_max_size"]
-            except Exception as e:
-                logger.error(f"Error in deserialization. {e}")
-                logger.error(
-                    f"Connection buffer -> {serialized_state['connection_buffer']}"
-                )
-                return -1
-        deserialization_time = time.time() - start_time
-        logger.info(f"Deserialization took {deserialization_time} seconds.")
-        return 0
-
     def rebuild(self):
         t0 = time.time()
-        logger.debug(f"Use mongo is {self.use_mongo}")
-        if not self.use_mongo:
-            return
+
+        # start from an empty state
+        with self.lock:
+            self.conveyor_params = VirtualizedConveyorPlant()
+            self.processing_buffer.clear()
+            self.observations.clear()
+            self.processing_seq_no = 0
 
         coll = self.mongo_client[self.mongo_db][self.mongo_collection]
 
-        cursor = coll.find({}).sort("payload.seq_id", -1).limit(100)
+        cursor = coll.find({}).sort("commit_seq_no", 1)
         events = list(cursor)
         # logger.debug(f"Documents retrived:\n{events}")
 
         rebuilt = []
             
-
         for doc in events:
             if "payload" not in doc:
                 continue
@@ -466,79 +436,9 @@ class Processing:
 
             time.sleep(self.cfg.odte_refresh_s)
 
-    def get_odte(self):
+    def get_odte(self) -> float:
         with self.lock:
             return self.odte
-
-    def get_delta(self):
-        current_state = self.serialize_state()
-        current_conveyor_params = current_state["conveyor_params"]
-        if self.transmitted_state == {}:
-            transmitted_conveyor_params = {}
-        else:
-            transmitted_conveyor_params = self.transmitted_state.get(
-                "conveyor_params", {}
-            )
-
-        conveyor_params_diff = {}
-        for key, value in current_conveyor_params.items():
-            if key in transmitted_conveyor_params:
-                transmitted_value = transmitted_conveyor_params[key]
-                if value != transmitted_value:
-                    conveyor_params_diff[key] = value
-            else:
-                conveyor_params_diff[key] = value
-
-        # processing buffer
-        current_proc_buffer = current_state["processing_buffer"]
-        new_proc_buffer = []
-        max_seq_seen = self.last_transmitted_processing_seq_no
-
-        for entry in current_proc_buffer:
-            seq = entry["seq_id"]
-            if seq > self.last_transmitted_processing_seq_no:
-                new_proc_buffer.append(entry)
-                if seq > max_seq_seen:
-                    max_seq_seen = seq
-
-        # connection buffer
-        current_conn_buffer = current_state["connection_buffer"]
-
-        different_items = {
-            "connection_buffer": current_conn_buffer,
-            "processing_buffer": new_proc_buffer,
-            "conveyor_params": conveyor_params_diff,
-        }
-
-        prev_state_max_size = (
-            None
-            if self.transmitted_state == {}
-            else self.transmitted_state.get("state_max_size")
-        )
-        if prev_state_max_size != current_state["state_max_size"]:
-            different_items["state_max_size"] = current_state["state_max_size"]
-
-        with self.lock:
-            self.transmitted_state = current_state
-            self.last_transmitted_processing_seq_no = max_seq_seen
-
-        return different_items
-
-    def process_delta(self, different_items):
-        logger.debug("Started proccess_delta.")
-        with self.lock:
-            logger.debug("Lock acquired.")
-            new_conveyor_params = different_items["conveyor_params"]
-            for key, value in new_conveyor_params.items():
-                current_value = getattr(self.conveyor_params, key)
-                if current_value != value:
-                    setattr(self.conveyor_params, key, value)
-
-            new_conn_buffer = different_items["connection_buffer"]
-            self.connection_buffer.extend(new_conn_buffer)
-
-            new_proc_buffer = different_items["processing_buffer"]
-            self.processing_buffer.extend(new_proc_buffer)
 
     def _burn_cpu_primes(self, max_n: int):
         for i in range(3, max_n + 1):

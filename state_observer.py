@@ -10,12 +10,22 @@ replay_dt_endpoint   : str = "http://localhost:5001/state"
 
 output_file = "state_comparison_results.csv"
 
+excluded_fields = ["recv_timestamp", "processing_time_s"]
+
+sort_key = "seq_id"
+
 def graceful_exit(signum, frame):
     print("Exiting gracefully...")
     exit(0)
 
 signal.signal(signal.SIGINT, graceful_exit)
 signal.signal(signal.SIGTERM, graceful_exit)
+
+def normalize_entry(entry: dict) -> dict:
+    return {k: v for k, v in entry.items() if k not in excluded_fields}
+
+def normalize_buffer(buffer: list) -> list:
+    return [normalize_entry(entry) for entry in buffer]
 
 def check_list_equality(list1: list, list2: list, sortkey: str | None) -> tuple[bool, dict]:
     differences_dict = {}
@@ -56,12 +66,12 @@ def check_state_equality(state1: dict, state2: dict) -> tuple[bool, float, dict]
         is_equal = False
         different_vars += 1
         differences_dict["conveyor_params"] = (state1["conveyor_params"], state2["conveyor_params"])
-    ok, differences = check_list_equality(state1["connection_buffer"], state2["connection_buffer"], "seq_id")
+    ok, differences = check_list_equality(normalize_buffer(state1["connection_buffer"]), normalize_buffer(state2["connection_buffer"]), sort_key)
     if not ok:
         is_equal = False
         different_vars += 1
         differences_dict["connection_buffer"] = differences
-    ok, differences = check_list_equality(state1["processing_buffer"], state2["processing_buffer"], "seq_id")
+    ok, differences = check_list_equality(normalize_buffer(state1["processing_buffer"]), normalize_buffer(state2["processing_buffer"]), sort_key)
     if not ok:
         is_equal = False
         different_vars += 1

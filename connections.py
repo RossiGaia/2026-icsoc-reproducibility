@@ -1,5 +1,6 @@
 import paho.mqtt.client as mqtt
 import logging
+import threading
 import time
 import json
 import random
@@ -10,7 +11,6 @@ import sys
 from paho.mqtt.enums import CallbackAPIVersion
 
 logger = logging.getLogger(__name__)
-
 
 class MqttConnection:
 
@@ -37,17 +37,24 @@ class MqttConnection:
         self.mqtt_broker_url = mqtt_conf["broker_url"]
         self.mqtt_port = mqtt_conf["port"]
         self.mqtt_topics = mqtt_conf["topics"]
-        self.use_mongo = use_mongo
         self.mongo_url = mongo_url
         self.mongo_db = mongo_db
         self.mongo_collection = mongo_collection
         self.mongo_client: pymongo.MongoClient
-        if self.use_mongo:
-            try:
-                self.mongo_client = pymongo.MongoClient(self.mongo_url)
-            except:
-                logger.error("Could not connect to mongo.")
-                sys.exit(1)
+
+        try:
+            self.mongo_client = pymongo.MongoClient(self.mongo_url)
+        except:
+            logger.error("Could not connect to mongo.")
+            sys.exit(1)
+
+        # add index on commit_seq_no for faster queries
+        self.mongo_client[self.mongo_db][self.mongo_collection].create_index(
+            [("commit_seq_no", pymongo.ASCENDING)]
+        )
+
+        self.commit_seq_no = 0
+        self.commit_seq_no_lock = threading.Lock()
 
     def new_client(self):
         self.mqtt_client = mqtt.Client(CallbackAPIVersion.VERSION2)
@@ -61,6 +68,10 @@ class MqttConnection:
             self.mqtt_client.subscribe(topic)
 
     def on_message(self, client, userdata, msg):
+        with self.commit_seq_no_lock:
+            commit_seq_no = self.commit_seq_no
+            self.commit_seq_no += 1
+
         data = {
             "topic": msg.topic,
             "payload": json.loads(msg.payload.decode("UTF-8")),
@@ -68,16 +79,16 @@ class MqttConnection:
             "key": "".join(
                 random.choices(string.ascii_uppercase + string.digits, k=10)
             ),
+            "commit_seq_no": commit_seq_no,
         }
         # pessimist logging
-        if self.use_mongo:
-            try:
-                self.mongo_client[self.mongo_db][self.mongo_collection].insert_one(data)
-                logger.debug(f"Determinant persisted for seq_id: {data['payload']['seq_id']}")
-            except Exception as e:
-                logger.error(f"Failed to persist determinant: {e}. Event will not be processed.")
-                return
-        
+        try:
+            self.mongo_client[self.mongo_db][self.mongo_collection].insert_one(data)
+            logger.debug(f"Determinant persisted for seq_id: {data['payload']['seq_id']}")
+        except Exception as e:
+            logger.error(f"Failed to persist determinant: {e}. Event will not be processed.")
+            return
+    
         self.connection_buffer.append(data)
         self.messages_buffer.append(data)
 
