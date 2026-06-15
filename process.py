@@ -4,7 +4,6 @@ import json
 import collections
 import threading
 import queue
-from numpy import random
 import pymongo
 import sys
 import logging
@@ -73,13 +72,11 @@ class Processing:
         self.conveyor_params = VirtualizedConveyorPlant()
         self.state_max_size = state_max_size
         self.odte: float = 0.0
-        self.lock = threading.Lock()
-        self.transmitted_state = {}
+        self.lock = threading.RLock()
         self.burn_worker = worker
         self.burn_work = work
         self.burn_queue = queue.Queue(maxsize=self.burn_worker * 2)
         self.burn_threads = []
-        self.last_transmitted_processing_seq_no = -1
         self.mongo_url = mongo_url
         self.mongo_db = mongo_db
         self.mongo_collection = mongo_collection
@@ -117,49 +114,47 @@ class Processing:
             if raw_msg is None:
                 time.sleep(0.001)
                 continue
-
-            snap = self._build_snap(raw_msg)
-            self._add_derived_metrics(snap)
-            self._add_rolling_features(snap)
-            self._add_health_and_anomalies(snap)
-            self._maybe_pad(snap)
-            self._increment_cycles()
-
-            processing_time = time.time() - t0
-            snap["processing_time_s"] = processing_time
-
+            
             with self.lock:
+                self._increment_cycles()
+                snap = self._build_snap(raw_msg)
+                self._add_derived_metrics(snap)
+                self._add_rolling_features(snap)
+                self._add_health_and_anomalies(snap)
+                self._maybe_pad(snap)
+
+                processing_time = time.time() - t0
+                snap["processing_time_s"] = processing_time
+
                 self.processing_buffer.append(snap)
                 self._record_observation(snap, processing_time)
 
             logger.debug(f"time to elaborate the message: {processing_time}")
 
     def _increment_cycles(self):
-        with self.lock:
-            self.conveyor_params.total_cycles += 1
+        self.conveyor_params.total_cycles += 1
 
     def _build_snap(self, raw_msg: dict) -> dict:
         payload = raw_msg["payload"]
         status = payload.get("status", {})
 
-        with self.lock:
-            pt = self.conveyor_params
-            pt.name = status.get("name", pt.name)
-            pt.load = status.get("load", pt.load)
-            pt.angular_acceleration = status.get(
-                "angular_acceleration", pt.angular_acceleration
-            )
-            pt.angular_speed = status.get("angular_speed", pt.angular_speed)
-            pt.motor_vibration = status.get("motor_vibration", pt.motor_vibration)
-            pt.belt_tension = status.get("belt_tension", pt.belt_tension)
-            pt.ambient_temperature = status.get(
-                "ambient_temperature", pt.ambient_temperature
-            )
-            pt.motor_temperature = status.get("motor_temperature", pt.motor_temperature)
-            pt.belt_friction = status.get("belt_friction", pt.belt_friction)
-            pt.wear = status.get("wear", pt.wear)
+        pt = self.conveyor_params
+        pt.name = status.get("name", pt.name)
+        pt.load = status.get("load", pt.load)
+        pt.angular_acceleration = status.get(
+            "angular_acceleration", pt.angular_acceleration
+        )
+        pt.angular_speed = status.get("angular_speed", pt.angular_speed)
+        pt.motor_vibration = status.get("motor_vibration", pt.motor_vibration)
+        pt.belt_tension = status.get("belt_tension", pt.belt_tension)
+        pt.ambient_temperature = status.get(
+            "ambient_temperature", pt.ambient_temperature
+        )
+        pt.motor_temperature = status.get("motor_temperature", pt.motor_temperature)
+        pt.belt_friction = status.get("belt_friction", pt.belt_friction)
+        pt.wear = status.get("wear", pt.wear)
 
-            snap = asdict(pt)
+        snap = asdict(pt)
 
         snap["recv_timestamp"] = raw_msg["recv_timestamp"]
         snap["creation_timestamp"] = payload["creation_timestamp"]
@@ -322,7 +317,7 @@ class Processing:
         pairs = []
         for r in rows:
             y = r.get(key)
-            t = r.get("recv_timestamp")
+            t = r.get("creation_timestamp")
             if y is None or t is None:
                 continue
             pairs.append((t, y))
@@ -394,7 +389,6 @@ class Processing:
             self.conveyor_params = VirtualizedConveyorPlant()
             self.processing_buffer.clear()
             self.observations.clear()
-            self.processing_seq_no = 0
 
         coll = self.mongo_client[self.mongo_db][self.mongo_collection]
 
@@ -402,8 +396,6 @@ class Processing:
         events = list(cursor)
         # logger.debug(f"Documents retrived:\n{events}")
 
-        rebuilt = []
-            
         for doc in events:
             if "payload" not in doc:
                 continue
@@ -412,17 +404,22 @@ class Processing:
                     "payload": doc["payload"],
                     "recv_timestamp": doc.get("recv_timestamp", time.time()),
                     "key": doc.get("key", str(doc.get("_id"))),
+                    "commit_seq_no": doc.get("commit_seq_no"),
                 }
 
-            while len(self.connection_buffer) == 100:
+            while len(self.connection_buffer) == self.connection_buffer.maxlen:
                 time.sleep(0.1)
 
             with self.lock:
                 self.connection_buffer.append(message)
 
+        # waiting for the rebuild to complete
+        while len(self.connection_buffer) > 0:
+            time.sleep(0.05)
 
-        mongo_docs_retrival_time = time.time() - t0
-        logger.info(f"Time to retrieve mongo docs {mongo_docs_retrival_time}.")
+
+        rebuild_total_time = time.time() - t0
+        logger.info(f"Rebuild total time: {rebuild_total_time}.")
 
     def odte_computation(self):
         while self.running:

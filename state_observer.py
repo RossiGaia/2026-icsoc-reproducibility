@@ -10,9 +10,9 @@ replay_dt_endpoint   : str = "http://localhost:5001/state"
 
 output_file = "state_comparison_results.csv"
 
-excluded_fields = ["recv_timestamp", "processing_time_s"]
+excluded_fields = ["recv_timestamp", "processing_time_s", "key"]
 
-sort_key = "seq_id"
+sort_key = "commit_seq_no"
 
 def graceful_exit(signum, frame):
     print("Exiting gracefully...")

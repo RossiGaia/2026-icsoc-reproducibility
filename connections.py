@@ -19,7 +19,6 @@ class MqttConnection:
         *,
         connection_buffer: collections.deque,
         mqtt_conf,
-        use_mongo=False,
         mongo_url: str,
         mongo_db: str,
         mongo_collection: str,

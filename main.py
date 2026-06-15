@@ -3,7 +3,7 @@ from process import Processing
 import threading
 import collections
 import signal
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, Response
 import yaml
 import logging
 import time
@@ -30,40 +30,15 @@ processing_active_ts = Gauge(
     "processing_active_ts",
     "Timestamp processing module started. 0 if not set."
 )
-
-serializing_time = Gauge(
-    "serializing_time",
-    "Time required to perform serialization. 0 if not set."
-)
-
-deserializing_time = Gauge(
-    "deserializing_time",
-    "Time required to perform deserialization. 0 if not set."
-)
-
-live_migration_restore_time = Gauge(
-    "live_migration_restore_time",
-    "Time required to perform live migration. 0 if not set."
-)
-
 rebuild_duration_time = Gauge(
     "rebuild_duration_time",
     "Time to complete the rebuild phase. 0 if not set."
 )
 
-mqtt_request_disconnect_target_ts = Gauge(
-    "mqtt_request_disconnect_target_ts",
-    "Timestamp when mqtt disconnection is requested to target dt. 0 if not set."
-)
-
 mqtt_active_ts.set(0)
 mqtt_inactive_ts.set(0)
 processing_active_ts.set(0)
-serializing_time.set(0)
-deserializing_time.set(0)
-live_migration_restore_time.set(0)
 rebuild_duration_time.set(0)
-mqtt_request_disconnect_target_ts.set(0)
 
 # conf_path = "/app/dt/configs/config.yaml"
 conf_path = "./config.yaml"
@@ -181,8 +156,6 @@ startup_mqtt_connection = int(os.environ.get("STARTUP_MQTT_CONNECTION", 1))
 
 @app.route("/rebuild", methods=["POST"])
 def rebuild():
-    global migration_done
-    migration_done = False
     rebuild_start_time = time.time()
     try:
         processing.rebuild()
@@ -191,7 +164,6 @@ def rebuild():
 
     rebuild_total_time = time.time() - rebuild_start_time
     rebuild_duration_time.set(rebuild_total_time)
-    migration_done = True
     return jsonify({"message": f"Rebuild success. Total time: {rebuild_total_time}"})
 
 
@@ -254,12 +226,6 @@ def get_metrics():
     odte_metric.set(processing.get_odte())
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
-
-@app.route("/migration_status", methods = ["GET"])
-def get_migration_status():
-    global migration_done
-    return jsonify({"status": migration_done})
-
 if __name__ == "__main__":
     logger.debug("Started main.")
 
@@ -269,7 +235,6 @@ if __name__ == "__main__":
         mqtt_connected_ts = time.time()
         mqtt_active_ts.set(mqtt_connected_ts)
         logger.info(f"Connected to mqtt. Time: {mqtt_connected_ts}")
-        migration_done = True
 
     processing_t = threading.Thread(target=processing.run)
     processing_t.start()
