@@ -5,9 +5,9 @@ import json
 import random
 import string
 import pymongo
-import threading
 import collections
 import sys
+from paho.mqtt.enums import CallbackAPIVersion
 
 logger = logging.getLogger(__name__)
 
@@ -17,19 +17,19 @@ class MqttConnection:
     def __init__(
         self,
         *,
-        connection_buffer,
+        connection_buffer: collections.deque,
         mqtt_conf,
         use_mongo=False,
-        mongo_url=None,
-        mongo_db=None,
-        mongo_collection=None,
-        messages_buffer,
+        mongo_url: str,
+        mongo_db: str,
+        mongo_collection: str,
+        messages_buffer: collections.deque,
         random_seed: int,
     ):
         
         random.seed(random_seed)
         self.mqtt_loop_run = True
-        self.mqtt_client = None
+        self.mqtt_client: mqtt.Client
 
         self.connection_buffer = connection_buffer
         self.messages_buffer = messages_buffer
@@ -41,6 +41,7 @@ class MqttConnection:
         self.mongo_url = mongo_url
         self.mongo_db = mongo_db
         self.mongo_collection = mongo_collection
+        self.mongo_client: pymongo.MongoClient
         if self.use_mongo:
             try:
                 self.mongo_client = pymongo.MongoClient(self.mongo_url)
@@ -49,7 +50,7 @@ class MqttConnection:
                 sys.exit(1)
 
     def new_client(self):
-        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        self.mqtt_client = mqtt.Client(CallbackAPIVersion.VERSION2)
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
 
@@ -94,8 +95,6 @@ class MqttConnection:
             self.mqtt_client.disconnect()
         finally:
             self.mqtt_client.loop_stop()
-
-        self.mqtt_client = None
 
         return
 
