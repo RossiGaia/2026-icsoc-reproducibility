@@ -1,0 +1,34 @@
+services:
+  dt:
+    build: .
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mqtt
+      - mongo
+    environment:
+      - STARTUP_MQTT_CONNECTION=0
+
+  mqtt:
+    image: eclipse-mosquitto:2.0.15
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+  mongo:
+    image: mongo:6.0.5
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=user
+      - MONGO_INITDB_ROOT_PASSWORD=pass
+      - MONGO_INITDB_DATABASE=dt
+      - MONGO_INITDB_COLLECTION=events
+
+  pt:
+    build: ./physical_twin
+    ports:
+      - "5001:5001"
+    depends_on:
+      - mqtt
