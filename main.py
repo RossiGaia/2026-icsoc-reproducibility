@@ -3,7 +3,7 @@ from process import Processing
 import threading
 import collections
 import signal
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, request
 import yaml
 import logging
 import time
@@ -99,10 +99,8 @@ def setup_logging():
 
     logging.getLogger("pymongo").setLevel(getattr(logging, mongo_level.upper(), logging.INFO))
 
-
 setup_logging()
 logger = logging.getLogger(__name__)
-
 
 def graceful_shutdown(signum, frame):
     processing.stop()
@@ -113,13 +111,13 @@ def graceful_shutdown(signum, frame):
 
     mqtt_connection.stop()
     try:
-        mqtt_t.join()
+        if mqtt_t:
+            mqtt_t.join()
     except:
         pass
 
     logger.info(f"Processing stopped at: {time.time()}")
     exit(0)
-
 
 signal.signal(signal.SIGINT, graceful_shutdown)
 signal.signal(signal.SIGTERM, graceful_shutdown)
@@ -153,6 +151,7 @@ processing = Processing(
 )
 
 startup_mqtt_connection = int(os.environ.get("STARTUP_MQTT_CONNECTION", 1))
+mqtt_t: threading.Thread | None = None
 
 @app.route("/rebuild", methods=["POST"])
 def rebuild():
@@ -183,7 +182,8 @@ def disconnect():
     mqtt_inactive_ts.set(disconnection_time)
     try:
         mqtt_connection.stop()
-        mqtt_t.join()
+        if mqtt_t:
+            mqtt_t.join()
     except:
         return jsonify({"status": "error"})
 
@@ -194,6 +194,8 @@ def disconnect():
 def reconnect():
     global mqtt_t
     try:
+        if mqtt_t and mqtt_t.is_alive():
+            mqtt_t.join()
         mqtt_connection.mqtt_loop_run = True
         mqtt_t = threading.Thread(target=mqtt_connection.run)
         mqtt_t.start()
@@ -225,6 +227,25 @@ def get_metrics():
     global odte_metric
     odte_metric.set(processing.get_odte())
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+@app.route("/logging_overhead", methods=["GET"])
+def get_logging_overhead():
+    stats = mqtt_connection.get_logging_overhead_stats()
+    return jsonify(stats)
+
+@app.route("/logging_overhead/reset", methods=["POST"])
+def reset_logging_overhead():
+    mqtt_connection.reset_logging_overhead_buffer()
+    return jsonify({"status": "success"})
+
+@app.route("/mongo_rebuild_size", methods=["POST"])
+def set_mongo_rebuild_size():
+    mongo_messages_no = request.get_json().get("mongo_messages_no", None)
+    if mongo_messages_no is None:
+        return jsonify({"status": "ok", "message": "no mongo messages number provided, not updating."})
+    else:
+        processing.set_mongo_rebuild_size(mongo_messages_no)
+        return jsonify({"status": "ok", "message": f"mongo rebuild size updated to {mongo_messages_no}."})
 
 if __name__ == "__main__":
     logger.debug("Started main.")

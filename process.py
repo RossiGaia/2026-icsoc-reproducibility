@@ -45,8 +45,8 @@ class ProcessingConfig:
 
     # ODTE params
     odte_window_length_sec: int = 10
-    odte_desired_timeliness_sec: float = 1.0
-    odte_expected_msg_sec: int = 1
+    odte_desired_timeliness_sec: float = 0.5
+    odte_expected_msg_sec: int = 5
     odte_refresh_s: float = 0.5
 
 
@@ -64,6 +64,7 @@ class Processing:
         mongo_collection: str,
         config: ProcessingConfig | None = None,
         messages_buffer,
+        mongo_rebuild_size: int = 1000,
     ):
         self.connection_buffer = connection_buffer
         self.processing_buffer = processing_buffer
@@ -80,6 +81,7 @@ class Processing:
         self.mongo_url = mongo_url
         self.mongo_db = mongo_db
         self.mongo_collection = mongo_collection
+        self.mongo_rebuild_size = mongo_rebuild_size
         self.cfg = config or ProcessingConfig()
         self.odte_t = threading.Thread(target=self.odte_computation, daemon=True)
         self.messages_buffer = messages_buffer
@@ -99,8 +101,9 @@ class Processing:
             self.burn_feeder_t.start()
 
     def run(self):
-    
-        self.odte_t.start()
+        
+        if not self.odte_t.is_alive():
+            self.odte_t.start()
 
         while self.running:
 
@@ -392,7 +395,7 @@ class Processing:
 
         coll = self.mongo_client[self.mongo_db][self.mongo_collection]
 
-        cursor = coll.find({}).sort("commit_seq_no", 1)
+        cursor = coll.find({}).sort("commit_seq_no", 1).limit(self.mongo_rebuild_size)
         events = list(cursor)
         # logger.debug(f"Documents retrived:\n{events}")
 
@@ -460,3 +463,7 @@ class Processing:
                 self.burn_queue.put(self.burn_work, timeout=0.1)
             except queue.Full:
                 pass
+
+    def set_mongo_rebuild_size(self, size: int):
+        with self.lock:
+            self.mongo_rebuild_size = size
