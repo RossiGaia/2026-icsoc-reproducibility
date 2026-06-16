@@ -25,13 +25,13 @@ class MqttConnection:
         messages_buffer: collections.deque,
         random_seed: int,
     ):
-        
-        random.seed(random_seed)
+        self.rng = random.Random(random_seed)
         self.mqtt_loop_run = True
         self.mqtt_client: mqtt.Client
 
         self.connection_buffer = connection_buffer
         self.messages_buffer = messages_buffer
+        self.logging_overhead_buffer = collections.deque(maxlen=10000)
 
         self.mqtt_broker_url = mqtt_conf["broker_url"]
         self.mqtt_port = mqtt_conf["port"]
@@ -76,14 +76,19 @@ class MqttConnection:
             "payload": json.loads(msg.payload.decode("UTF-8")),
             "recv_timestamp": time.time(),
             "key": "".join(
-                random.choices(string.ascii_uppercase + string.digits, k=10)
+                self.rng.choices(string.ascii_uppercase + string.digits, k=10)
             ),
             "commit_seq_no": commit_seq_no,
         }
+
+        write_start_time = time.time()
         # pessimist logging
         try:
             self.mongo_client[self.mongo_db][self.mongo_collection].insert_one(data)
+            write_duration_s = time.time() - write_start_time
             logger.debug(f"Determinant persisted for seq_id: {data['payload']['seq_id']}")
+            logger.debug(f"Write duration: {write_duration_s} seconds")
+            self.logging_overhead_buffer.append(write_duration_s)
         except Exception as e:
             logger.error(f"Failed to persist determinant: {e}. Event will not be processed.")
             return
@@ -111,3 +116,19 @@ class MqttConnection:
     def stop(self):
         self.mqtt_loop_run = False
         logger.info(f"stop requested. mqtt_loop_run = {self.mqtt_loop_run}")
+
+    def get_logging_overhead_stats(self) -> dict:
+        if len(self.logging_overhead_buffer) == 0:
+            return {"average_s": None, "max_s": None, "min_s": None, "count": 0}
+        values = list(self.logging_overhead_buffer)
+        average = sum(values) / len(values)
+        return {
+            "average_s": average,
+            "max_s": max(values),
+            "min_s": min(values),
+            "count": len(values),
+            "values": values,
+        }
+
+    def reset_logging_overhead_buffer(self):
+        self.logging_overhead_buffer.clear()
