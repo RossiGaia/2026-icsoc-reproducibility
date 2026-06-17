@@ -13,18 +13,19 @@ import time
 import json
 import random
 import threading
-from flask import Flask
+from flask import Flask, request, jsonify
 import signal
 from paho.mqtt.enums import CallbackAPIVersion
 
-
 def graceful_shutdown(signum, frame):
-    cnv1.stop()
-    mqtt_t.join()
-    cnv1_t.join()
+    if cnv1:
+        cnv1.stop()
+    if mqtt_t:
+        mqtt_t.join()
+    if cnv1_t:
+        cnv1_t.join()
     exit(0)
-
-
+    
 signal.signal(signal.SIGINT, graceful_shutdown)
 
 app = Flask(__name__)
@@ -39,7 +40,9 @@ sensors_config = configs["sensors"]
 mqtt_config = sensors_config["mqtt"]
 flask_port = int(configs["web"].get("port", 5001))
 
+global_vars_lock = threading.Lock()
 seq_id = 0
+message_limit: int = 1000
 
 @dataclass
 class ConveyorParams:
@@ -183,13 +186,13 @@ class ConveyorPlant:
                 p.wear = max(0.0, min(100.0, p.wear))
 
                 # Debug log for tracing
-                logger.debug(
-                    f"[{p.name}] load={p.load:.2f} ω={p.angular_speed:.2f} rad/s "
-                    f"a={p.angular_acceleration:.2f} rad/s² T={p.belt_tension:.1f} N "
-                    f"μ={p.belt_friction:.3f} vib={p.motor_vibration:.2f} mm/s "
-                    f"Tamb={p.ambient_temperature:.1f}°C Tmot={p.motor_temperature:.1f}°C "
-                    f"wear={p.wear:.2f}"
-                )
+                # logger.debug(
+                #     f"[{p.name}] load={p.load:.2f} ω={p.angular_speed:.2f} rad/s "
+                #     f"a={p.angular_acceleration:.2f} rad/s² T={p.belt_tension:.1f} N "
+                #     f"μ={p.belt_friction:.3f} vib={p.motor_vibration:.2f} mm/s "
+                #     f"Tamb={p.ambient_temperature:.1f}°C Tmot={p.motor_temperature:.1f}°C "
+                #     f"wear={p.wear:.2f}"
+                # )
 
             # Sleep until next tick
             time.sleep(period)
@@ -205,7 +208,7 @@ class ConveyorPlant:
         )
 
     def mqtt_t(self):
-        global seq_id
+        global seq_id, message_limit, global_vars_lock
 
         self.mqtt_client = mqtt.Client(CallbackAPIVersion.VERSION2)
         self.mqtt_client.connect(
@@ -215,9 +218,15 @@ class ConveyorPlant:
         self.mqtt_client.loop_start()
 
         while self.running:
+            with global_vars_lock:
+                if seq_id >= message_limit:
+                    self.running = False
+                    break
+                current_seq_id = seq_id
+                seq_id += 1
             with self._lock:
                 data = {
-                    "seq_id": seq_id,
+                    "seq_id": current_seq_id,
                     "status": {
                         "name": self.conveyor_params.name,
                         "load": self.conveyor_params.load,
@@ -234,20 +243,57 @@ class ConveyorPlant:
                 }
             payload = json.dumps(data)
             self.mqtt_client.publish(self.mqtt_connection.mqtt_topic, payload)
-            seq_id += 1
             logger.debug(f"Seq_id: {seq_id}")
             time.sleep(1.0 / self.mqtt_connection.sensors_updates_per_second)
 
         self.mqtt_client.loop_stop()
 
+cnv1: ConveyorPlant | None = None
+mqtt_t: threading.Thread | None = None
+cnv1_t: threading.Thread | None = None
 
-cnv1 = ConveyorPlant()
+@app.route("/message_limit", methods=["POST"])
+def set_message_limit():
+    global message_limit, global_vars_lock
+    body = request.get_json()
+    with global_vars_lock:
+        message_limit = int(body.get("limit"))
+    logger.info(f"Message limit set to {message_limit}.")
+    return jsonify({"status": "success", "limit": message_limit})
 
-cnv1_t = threading.Thread(target=cnv1.run)
-cnv1_t.start()
+@app.route("/updates_per_second", methods=["POST"])
+def set_updates_per_second():
+    global cnv1
+    body = request.get_json()
+    updates_per_second = int(body.get("updates_per_second"))
+    if cnv1:
+        cnv1.mqtt_connection.sensors_updates_per_second = updates_per_second
+    logger.info(f"Updates per second set to {updates_per_second}.")
+    return jsonify({"status": "success", "updates_per_second": updates_per_second})
 
-mqtt_t = threading.Thread(target=cnv1.mqtt_t)
-mqtt_t.start()
+@app.route("/stop", methods=["POST"])
+def stop():
+    global cnv1, mqtt_t, cnv1_t
+    if cnv1:
+        cnv1.stop()
+    if mqtt_t:
+        mqtt_t.join()
+    if cnv1_t:
+        cnv1_t.join()
+    return jsonify({"status": "success"})
+
+@app.route("/start", methods=["POST"])
+def start():
+    global cnv1, mqtt_t, cnv1_t, seq_id
+    cnv1 = ConveyorPlant()
+    with global_vars_lock:
+        seq_id = 0
+    cnv1_t = threading.Thread(target=cnv1.run)
+    cnv1_t.start()
+
+    mqtt_t = threading.Thread(target=cnv1.mqtt_t)
+    mqtt_t.start()
+    return jsonify({"status": "success"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=flask_port)
