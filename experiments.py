@@ -24,6 +24,7 @@ import logging
 import time
 import requests
 import pymongo
+import signal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,11 +33,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def graceful_shutdown(signum, frame):
+    logger.info("Shutting down...")
+    exit(0)
+
+signal.signal(signal.SIGINT, graceful_shutdown)
+signal.signal(signal.SIGTERM, graceful_shutdown)
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 DT_URL              : str   = "http://localhost:5000"
+PT_URL              : str   = "http://localhost:5001"
 MONGO_URL           : str   = "mongodb://user:pass@localhost:27017"
 MONGO_DB            : str   = "dt"
 MONGO_COLLECTION    : str   = "events"
@@ -46,18 +55,23 @@ ODTE_POLL_INTERVAL  : float = 0.5
 ODTE_TIMEOUT        : float = 120.0
 
 # event counts used in experiments 1 and 3
-EVENT_COUNTS        : list  = [100, 200, 500, 1000, 2000]
+EVENT_COUNTS        : list  = [100, 200, 500, 1000, 2000, 5000, 10000]
+UPDATES_PER_SECOND  : list  = [1, 5, 10, 20]
 
 # seconds to wait between rounds for the DT to stabilize
 STABILIZATION_WAIT  : float = 3.0
 
+EXCLUDED_FIELDS = ["recv_timestamp", "processing_time_s", "key"]
+
+SORT_KEY = "commit_seq_no"
+
 # ---------------------------------------------------------------------------
 # MongoDB helpers
 # ---------------------------------------------------------------------------
+_mongo_client = pymongo.MongoClient(MONGO_URL)
 
 def _collection():
-    client = pymongo.MongoClient(MONGO_URL)
-    return client[MONGO_DB][MONGO_COLLECTION]
+    return _mongo_client[MONGO_DB][MONGO_COLLECTION]
 
 def count_events() -> int:
     return _collection().count_documents({})
@@ -76,17 +90,119 @@ def wait_for_n_events(n: int, poll_interval: float = 1.0):
         time.sleep(poll_interval)
 
 # ---------------------------------------------------------------------------
-# DT endpoint helpers
+# PT endpoint helpers
 # ---------------------------------------------------------------------------
-def set_mongo_rebuild_size(size: int):
+
+def start_pt():
+    resp = requests.post(f"{PT_URL}/start", timeout=10)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Start failed: {resp.text}")
+    logger.info("PT started successfully.")
+
+def stop_pt():
+    resp = requests.post(f"{PT_URL}/stop", timeout=10)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Stop failed: {resp.text}")
+    logger.info("PT stopped successfully.")
+
+def set_message_limit(limit: int):
     resp = requests.post(
-        f"{DT_URL}/mongo_rebuild_size",
-        json={"mongo_messages_no": size},
+        f"{PT_URL}/message_limit",
+        json={"limit": limit},
         timeout=5
     )
     if resp.status_code != 200:
-        raise RuntimeError(f"Set mongo rebuild size failed: {resp.text}")
-    logger.info(f"Mongo rebuild size set to {size}.")
+        raise RuntimeError(f"Set messages limit failed: {resp.text}")
+    logger.info(f"Message limit set to {limit}.")
+
+def set_updates_per_second(updates_per_second: int):
+    resp = requests.post(
+    f"{PT_URL}/updates_per_second",
+        json={"updates_per_second": updates_per_second},
+        timeout=5
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Set updates per second failed: {resp.text}")
+    logger.info(f"Updates per second set to {updates_per_second}.")
+
+# ---------------------------------------------------------------------------
+# DT state comparison helpers
+# ---------------------------------------------------------------------------
+
+def normalize_entry(entry: dict) -> dict:
+    return {k: v for k, v in entry.items() if k not in EXCLUDED_FIELDS}
+
+def normalize_buffer(buffer: list) -> list:
+    return [normalize_entry(entry) for entry in buffer]
+
+def check_list_equality(list1: list, list2: list, sortkey: str | None) -> tuple[bool, dict]:
+    differences_dict = {}
+
+    if sortkey:
+        list1.sort(key=lambda x: x[sortkey])
+        list2.sort(key=lambda x: x[sortkey])
+
+    if len(list1) != len(list2):
+        return False, differences_dict
+    for i in range(len(list1)):
+        if list1[i] != list2[i]:
+            differences_dict[i] = {"list1_value": list1[i], "list2_value": list2[i]}
+    if len(differences_dict) > 0:
+        return False, differences_dict
+    return True, differences_dict
+
+
+def check_state_equality(state1: dict, state2: dict) -> tuple[bool, float, dict]:
+    is_equal = True
+    difference = 0.0
+    differences_dict = {}
+    vars_no = len(state1)
+    different_vars = 0
+    if state1["state_max_size"] != state2["state_max_size"]:
+        is_equal = False
+        different_vars += 1
+        differences_dict["state_max_size"] = (state1["state_max_size"], state2["state_max_size"])
+    if state1["connection_buffer_maxlen"] != state2["connection_buffer_maxlen"]:
+        is_equal = False
+        different_vars += 1
+        differences_dict["connection_buffer_maxlen"] = (state1["connection_buffer_maxlen"], state2["connection_buffer_maxlen"])
+    if state1["processing_buffer_maxlen"] != state2["processing_buffer_maxlen"]:
+        is_equal = False
+        different_vars += 1
+        differences_dict["processing_buffer_maxlen"] = (state1["processing_buffer_maxlen"], state2["processing_buffer_maxlen"])
+    if state1["conveyor_params"] != state2["conveyor_params"]:
+        is_equal = False
+        different_vars += 1
+        differences_dict["conveyor_params"] = (state1["conveyor_params"], state2["conveyor_params"])
+    ok, differences = check_list_equality(normalize_buffer(state1["connection_buffer"]), normalize_buffer(state2["connection_buffer"]), SORT_KEY)
+    if not ok:
+        is_equal = False
+        different_vars += 1
+        differences_dict["connection_buffer"] = differences
+    ok, differences = check_list_equality(normalize_buffer(state1["processing_buffer"]), normalize_buffer(state2["processing_buffer"]), SORT_KEY)
+    if not ok:
+        is_equal = False
+        different_vars += 1
+        differences_dict["processing_buffer"] = differences
+
+    difference = different_vars / vars_no if vars_no > 0 else 0
+    return is_equal, difference, differences_dict
+
+# ---------------------------------------------------------------------------
+# DT endpoint helpers
+# ---------------------------------------------------------------------------
+def get_dt_state() -> dict:
+    resp = requests.get(f"{DT_URL}/state", timeout=10)
+    if resp.status_code != 200:
+        raise RuntimeError(f"DT state request failed: {resp.text}")
+    logger.info("DT state acquired successfully.")
+    return resp.json()["state"]
+
+def restart_dt():
+    resp = requests.post(f"{DT_URL}/restart", timeout=10)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Restart failed: {resp.text}")
+    logger.info("DT restarted successfully.")
 
 def reset_overhead_buffer():
     resp = requests.post(f"{DT_URL}/logging_overhead/reset", timeout=5)
@@ -162,24 +278,39 @@ def experiment_1(rounds: int):
     rows = []
 
     for n in EVENT_COUNTS:
-        set_mongo_rebuild_size(n)  
+        set_message_limit(n)  
         for r in range(rounds):
             logger.info(f"--- N={n}, round={r+1}/{rounds} ---")
             try:
+                restart_dt()
                 clear_mongo()
                 reconnect_dt()
+                time.sleep(STABILIZATION_WAIT)
+                start_pt()
                 wait_for_n_events(n)
                 disconnect_dt()
+                time.sleep(STABILIZATION_WAIT)
+                real_state = get_dt_state()
+                stop_pt()
+                restart_dt()
+                time.sleep(STABILIZATION_WAIT)
                 rebuild_time = trigger_rebuild()
-                rows.append([n, r + 1, round(rebuild_time, 4)])
+                time.sleep(STABILIZATION_WAIT)
+                rebuilt_state = get_dt_state()
+                ok, _, _ = check_state_equality(real_state, rebuilt_state)
+                if ok:
+                    logger.info("DT rebuilt state is equal to previous state")
+                else:
+                    logger.error("DT rebuilt state is NOT equal to previous state")
+                rows.append([n, r + 1, round(rebuild_time, 4), ok])
             except Exception as e:
                 logger.error(f"Round failed: {e}")
-                rows.append([n, r + 1, None])
+                rows.append([n, r + 1, None, None])
             finally:
                 time.sleep(STABILIZATION_WAIT)
     write_csv(
         "experiment1_rebuild_time.csv",
-        ["n_events", "round", "rebuild_time_s"],
+        ["n_events", "round", "rebuild_time_s", "equal"],
         rows
     )
 
@@ -187,7 +318,7 @@ def experiment_1(rounds: int):
 # Experiment 2: Runtime overhead of logging
 # ---------------------------------------------------------------------------
 
-def experiment_2(rounds: int, n: int = 100):
+def experiment_2(rounds: int):
     """
     Collect per-event MongoDB write latency while the DT is running normally.
     Run this experiment at each desired event rate (change PT config manually).
@@ -198,40 +329,46 @@ def experiment_2(rounds: int, n: int = 100):
     """
     logger.info("=== Experiment 2: Runtime overhead of logging ===")
     rows = []
-
-    for r in range(rounds):
-        logger.info(f"--- round={r+1}/{rounds} ---")
-        try:
-            clear_mongo()
-            reconnect_dt()
-            wait_for_n_events(n)
-            stats = get_logging_overhead_stats()
-            if stats["count"] == 0:
-                logger.warning("No overhead samples collected yet.")
-                continue
-            rows.append([
-                r + 1,
-                round(stats["average_s"] * 1000, 4),  # convert to ms
-                round(stats["min_s"] * 1000, 4),
-                round(stats["max_s"] * 1000, 4),
-                stats["count"],
-                stats["values"]
-            ])
-            logger.info(
-                f"  avg={stats['average_s']*1000:.2f}ms "
-                f"min={stats['min_s']*1000:.2f}ms "
-                f"max={stats['max_s']*1000:.2f}ms "
-                f"count={stats['count']}"
-            )
-            disconnect_dt()
-            reset_overhead_buffer()
-        except Exception as e:
-            logger.error(f"Round failed: {e}")
-            rows.append([r + 1, None, None, None, None])
+    set_message_limit(999999)
+    for n in UPDATES_PER_SECOND:
+        for r in range(rounds):
+            logger.info(f"--- round={r+1}/{rounds} ---")
+            try:
+                restart_dt()
+                clear_mongo()
+                reconnect_dt()
+                time.sleep(STABILIZATION_WAIT)
+                start_pt()
+                wait_for_n_events(100)
+                stop_pt()
+                stats = get_logging_overhead_stats()
+                if stats["count"] == 0:
+                    logger.warning("No overhead samples collected yet.")
+                    continue
+                rows.append([
+                    r + 1,
+                    n,
+                    round(stats["average_s"] * 1000, 4),  # convert to ms
+                    round(stats["min_s"] * 1000, 4),
+                    round(stats["max_s"] * 1000, 4),
+                    stats["count"],
+                    stats["values"]
+                ])
+                logger.info(
+                    f"  avg={stats['average_s']*1000:.2f}ms "
+                    f"min={stats['min_s']*1000:.2f}ms "
+                    f"max={stats['max_s']*1000:.2f}ms "
+                    f"count={stats['count']}"
+                )
+                disconnect_dt()
+                reset_overhead_buffer()
+            except Exception as e:
+                logger.error(f"Round failed: {e}")
+                rows.append([r + 1, None, None, None, None])
 
     write_csv(
         "experiment2_logging_overhead.csv",
-        ["round", "avg_write_ms", "min_write_ms", "max_write_ms", "sample_count", "values"],
+        ["round", "updates_per_sec", "avg_write_ms", "min_write_ms", "max_write_ms", "sample_count", "values"],
         rows
     )
 
@@ -251,31 +388,52 @@ def experiment_3(rounds: int):
     rows = []
 
     for n in EVENT_COUNTS:
+        set_message_limit(n)  
         for r in range(rounds):
             logger.info(f"--- N={n}, round={r+1}/{rounds} ---")
             try:
+                restart_dt()
                 clear_mongo()
                 reconnect_dt()
+                time.sleep(STABILIZATION_WAIT)
+                start_pt()
                 wait_for_n_events(n)
                 disconnect_dt()
+                time.sleep(STABILIZATION_WAIT)
+                real_state = get_dt_state()
+                stop_pt()
+                restart_dt()
+                time.sleep(STABILIZATION_WAIT)
                 rebuild_time = trigger_rebuild()
+                time.sleep(STABILIZATION_WAIT)
+                rebuilt_state = get_dt_state()
+                ok, _, _ = check_state_equality(real_state, rebuilt_state)
+                if ok:
+                    logger.info("DT rebuilt state is equal to previous state")
+                else:
+                    logger.error("DT rebuilt state is NOT equal to previous state")
                 reconnect_dt()
+                set_message_limit(999999)
+                time.sleep(STABILIZATION_WAIT)
+                start_pt()
                 recovery_time = wait_for_odte_recovery()
+                stop_pt()
+                disconnect_dt()
                 rows.append([
                     n, r + 1,
                     round(rebuild_time, 4),
-                    round(recovery_time, 4) if recovery_time != float("inf") else "timeout"
+                    round(recovery_time, 4) if recovery_time != float("inf") else "timeout",
+                    ok
                 ])
             except Exception as e:
                 logger.error(f"Round failed: {e}")
-                rows.append([n, r + 1, None, None])
+                rows.append([n, r + 1, None, None, None])
             finally:
-                disconnect_dt()
                 time.sleep(STABILIZATION_WAIT)
 
     write_csv(
         "experiment3_odte_recovery.csv",
-        ["n_events", "round", "rebuild_time_s", "odte_recovery_time_s"],
+        ["n_events", "round", "rebuild_time_s", "odte_recovery_time_s", "equal"],
         rows
     )
 
