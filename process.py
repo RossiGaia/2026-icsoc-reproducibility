@@ -64,7 +64,6 @@ class Processing:
         mongo_collection: str,
         config: ProcessingConfig | None = None,
         messages_buffer,
-        mongo_rebuild_size: int = 1000,
     ):
         self.connection_buffer = connection_buffer
         self.processing_buffer = processing_buffer
@@ -81,7 +80,6 @@ class Processing:
         self.mongo_url = mongo_url
         self.mongo_db = mongo_db
         self.mongo_collection = mongo_collection
-        self.mongo_rebuild_size = mongo_rebuild_size
         self.cfg = config or ProcessingConfig()
         self.odte_t = threading.Thread(target=self.odte_computation, daemon=True)
         self.messages_buffer = messages_buffer
@@ -162,7 +160,7 @@ class Processing:
         snap["recv_timestamp"] = raw_msg["recv_timestamp"]
         snap["creation_timestamp"] = payload["creation_timestamp"]
         snap["key"] = raw_msg["key"]
-        snap["seq_id"] = raw_msg.get("commit_seq_no")
+        snap["commit_seq_no"] = raw_msg.get("commit_seq_no")
         return snap
 
     def _add_derived_metrics(self, snap: dict) -> None:
@@ -391,11 +389,12 @@ class Processing:
         with self.lock:
             self.conveyor_params = VirtualizedConveyorPlant()
             self.processing_buffer.clear()
+            self.connection_buffer.clear()
             self.observations.clear()
 
         coll = self.mongo_client[self.mongo_db][self.mongo_collection]
 
-        cursor = coll.find({}).sort("commit_seq_no", 1).limit(self.mongo_rebuild_size)
+        cursor = coll.find({}).sort("commit_seq_no", 1)
         events = list(cursor)
         # logger.debug(f"Documents retrived:\n{events}")
 
@@ -463,7 +462,3 @@ class Processing:
                 self.burn_queue.put(self.burn_work, timeout=0.1)
             except queue.Full:
                 pass
-
-    def set_mongo_rebuild_size(self, size: int):
-        with self.lock:
-            self.mongo_rebuild_size = size
