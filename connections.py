@@ -89,12 +89,12 @@ class MqttConnection:
             logger.debug(f"Determinant persisted for seq_id: {data['payload']['seq_id']}")
             logger.debug(f"Write duration: {write_duration_s} seconds")
             self.logging_overhead_buffer.append(write_duration_s)
+            self.connection_buffer.append(data)
+            self.messages_buffer.append(data)
         except Exception as e:
             logger.error(f"Failed to persist determinant: {e}. Event will not be processed.")
             return
-    
-        self.connection_buffer.append(data)
-        self.messages_buffer.append(data)
+        
 
     def run(self):
         self.new_client()
@@ -132,3 +132,9 @@ class MqttConnection:
 
     def reset_logging_overhead_buffer(self):
         self.logging_overhead_buffer.clear()
+
+    def reset(self):
+        with self.commit_seq_no_lock:
+            self.commit_seq_no = 0
+        self.mqtt_loop_run = True
+        logger.info("MqttConnection reset.")
