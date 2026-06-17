@@ -202,6 +202,9 @@ class ConveyorPlant:
     def stop(self):
         self.running = False
 
+    def reset(self):
+        self.running = True
+
     def on_mqtt_connect(self, client, userdata, flags, reason_code, properties):
         logger.debug(
             f"mqtt connected to {self.mqtt_connection.mqtt_broker_url} at port {self.mqtt_connection.mqtt_port}."
@@ -248,7 +251,7 @@ class ConveyorPlant:
 
         self.mqtt_client.loop_stop()
 
-cnv1: ConveyorPlant | None = None
+cnv1 = ConveyorPlant()
 mqtt_t: threading.Thread | None = None
 cnv1_t: threading.Thread | None = None
 
@@ -285,7 +288,8 @@ def stop():
 @app.route("/start", methods=["POST"])
 def start():
     global cnv1, mqtt_t, cnv1_t, seq_id
-    cnv1 = ConveyorPlant()
+    cnv1.reset()
+
     with global_vars_lock:
         seq_id = 0
     cnv1_t = threading.Thread(target=cnv1.run)
