@@ -30,7 +30,7 @@ class VirtualizedConveyorPlant:
     total_cycles : int = 0
 
 
-@dataclass(frozen=True)
+@dataclass()
 class ProcessingConfig:
     pulley_radius_m: float = 0.15
     rolling_window: int = 50
