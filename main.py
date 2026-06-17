@@ -288,6 +288,15 @@ def restart():
     logger.debug("Processing restarted.")
     return jsonify({"status": "restart success with no mqtt connection. Call reconnect to start mqtt connection."})
 
+@app.route("/updates_per_second", methods=["POST"])
+def set_odte_updates_per_second():
+    body = request.get_json()
+    updates_per_second = int(body.get("updates_per_second"))
+    processing.cfg.odte_expected_msg_sec = updates_per_second
+    logger.info(f"Updates per second set to {updates_per_second}.")
+    return jsonify({"status": "success", "updates_per_second": updates_per_second})
+
+
 if __name__ == "__main__":
     logger.debug("Started main.")
 
