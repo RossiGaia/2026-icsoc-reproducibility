@@ -25,6 +25,7 @@ import time
 import requests
 import pymongo
 import signal
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,20 +44,13 @@ signal.signal(signal.SIGTERM, graceful_shutdown)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-DT_URL              : str   = "http://localhost:5000"
-PT_URL              : str   = "http://localhost:5001"
-MONGO_URL           : str   = "mongodb://user:pass@localhost:27017"
-MONGO_DB            : str   = "dt"
-MONGO_COLLECTION    : str   = "events"
-
 ODTE_THRESHOLD      : float = 0.9
 ODTE_POLL_INTERVAL  : float = 0.5
 ODTE_TIMEOUT        : float = 120.0
 
 # event counts used in experiments 1 and 3
 EVENT_COUNTS        : list  = [100, 200, 500, 1000, 2000, 5000, 10000]
-UPDATES_PER_SECOND  : list  = [1, 5, 10, 20]
+UPDATES_PER_SECOND  : list  = [1, 5, 10, 20, 50, 100, 200, 500, 1000]
 
 # seconds to wait between rounds for the DT to stabilize
 STABILIZATION_WAIT  : float = 3.0
@@ -68,7 +62,6 @@ SORT_KEY = "commit_seq_no"
 # ---------------------------------------------------------------------------
 # MongoDB helpers
 # ---------------------------------------------------------------------------
-_mongo_client = pymongo.MongoClient(MONGO_URL)
 
 def _collection():
     return _mongo_client[MONGO_DB][MONGO_COLLECTION]
@@ -115,7 +108,7 @@ def set_message_limit(limit: int):
         raise RuntimeError(f"Set messages limit failed: {resp.text}")
     logger.info(f"Message limit set to {limit}.")
 
-def set_updates_per_second(updates_per_second: int):
+def pt_set_updates_per_second(updates_per_second: int):
     resp = requests.post(
     f"{PT_URL}/updates_per_second",
         json={"updates_per_second": updates_per_second},
@@ -191,6 +184,16 @@ def check_state_equality(state1: dict, state2: dict) -> tuple[bool, float, dict]
 # ---------------------------------------------------------------------------
 # DT endpoint helpers
 # ---------------------------------------------------------------------------
+def dt_set_updates_per_second(updates_per_second: int):
+    resp = requests.post(
+    f"{DT_URL}/updates_per_second",
+        json={"updates_per_second": updates_per_second},
+        timeout=5
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Set updates per second failed: {resp.text}")
+    logger.info(f"Updates per second set to {updates_per_second}.")
+
 def get_dt_state() -> dict:
     resp = requests.get(f"{DT_URL}/state", timeout=10)
     if resp.status_code != 200:
@@ -204,11 +207,17 @@ def restart_dt():
         raise RuntimeError(f"Restart failed: {resp.text}")
     logger.info("DT restarted successfully.")
 
-def reset_overhead_buffer():
+def reset_logging_overhead_buffer():
     resp = requests.post(f"{DT_URL}/logging_overhead/reset", timeout=5)
     if resp.status_code != 200:
         raise RuntimeError(f"Reset logging overhead buffer failed: {resp.text}")
     logger.info("Logging overhead buffer reset.")
+
+def reset_processing_overhead_buffer():
+    resp = requests.post(f"{DT_URL}/processing_overhead/reset", timeout=5)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Reset processing overhead buffer failed: {resp.text}")
+    logger.info("Processing overhead buffer reset.")
 
 def trigger_rebuild() -> float:
     logger.info("Triggering rebuild...")
@@ -238,6 +247,10 @@ def get_odte() -> float:
 
 def get_logging_overhead_stats() -> dict:
     resp = requests.get(f"{DT_URL}/logging_overhead", timeout=5)
+    return resp.json()
+
+def get_processing_overhead_stats() -> dict:
+    resp = requests.get(f"{DT_URL}/processing_overhead", timeout=5)
     return resp.json()
 
 def wait_for_odte_recovery() -> float:
@@ -283,7 +296,6 @@ def experiment_1(rounds: int):
             logger.info(f"--- N={n}, round={r+1}/{rounds} ---")
             try:
                 restart_dt()
-                clear_mongo()
                 reconnect_dt()
                 time.sleep(STABILIZATION_WAIT)
                 start_pt()
@@ -308,8 +320,9 @@ def experiment_1(rounds: int):
                 rows.append([n, r + 1, None, None])
             finally:
                 time.sleep(STABILIZATION_WAIT)
+                clear_mongo()
     write_csv(
-        "experiment1_rebuild_time.csv",
+        f"experiment1_rebuild_time{current_timestamp}.csv",
         ["n_events", "round", "rebuild_time_s", "equal"],
         rows
     )
@@ -324,51 +337,75 @@ def experiment_2(rounds: int):
     Run this experiment at each desired event rate (change PT config manually).
     The script collects stats over the specified number of rounds, each round
     separated by a fixed interval to sample different time windows.
-
-    Record the event rate label manually via --rate argument.
     """
     logger.info("=== Experiment 2: Runtime overhead of logging ===")
     rows = []
-    set_message_limit(999999)
+    set_message_limit(1000)
     for n in UPDATES_PER_SECOND:
+        pt_set_updates_per_second(n)
+        dt_set_updates_per_second(n)
         for r in range(rounds):
             logger.info(f"--- round={r+1}/{rounds} ---")
             try:
                 restart_dt()
-                clear_mongo()
                 reconnect_dt()
                 time.sleep(STABILIZATION_WAIT)
                 start_pt()
-                wait_for_n_events(100)
+                wait_for_n_events(1000)
                 stop_pt()
-                stats = get_logging_overhead_stats()
-                if stats["count"] == 0:
-                    logger.warning("No overhead samples collected yet.")
+                logging_stats = get_logging_overhead_stats()
+                if logging_stats["count"] == 0:
+                    logger.warning("No logging overhead samples collected yet.")
                     continue
                 rows.append([
                     r + 1,
                     n,
-                    round(stats["average_s"] * 1000, 4),  # convert to ms
-                    round(stats["min_s"] * 1000, 4),
-                    round(stats["max_s"] * 1000, 4),
-                    stats["count"],
-                    stats["values"]
+                    "logging",
+                    round(logging_stats["average_s"] * 1000, 4),  # convert to ms
+                    round(logging_stats["min_s"] * 1000, 4),
+                    round(logging_stats["max_s"] * 1000, 4),
+                    logging_stats["count"],
+                    logging_stats["values"]
                 ])
                 logger.info(
-                    f"  avg={stats['average_s']*1000:.2f}ms "
-                    f"min={stats['min_s']*1000:.2f}ms "
-                    f"max={stats['max_s']*1000:.2f}ms "
-                    f"count={stats['count']}"
+                    f"  avg={logging_stats['average_s']*1000:.2f}ms "
+                    f"min={logging_stats['min_s']*1000:.2f}ms "
+                    f"max={logging_stats['max_s']*1000:.2f}ms "
+                    f"count={logging_stats['count']}"
+                )
+                processing_stats = get_processing_overhead_stats()
+                if processing_stats["count"] == 0:
+                    logger.warning("No processing overhead samples collected yet.")
+                    continue
+                rows.append([
+                    r + 1,
+                    n,
+                    "processing",
+                    round(processing_stats["average_s"] * 1000, 4),  # convert to ms
+                    round(processing_stats["min_s"] * 1000, 4),
+                    round(processing_stats["max_s"] * 1000, 4),
+                    processing_stats["count"],
+                    processing_stats["values"]
+                ])
+                logger.info(
+                    f"  avg={processing_stats['average_s']*1000:.2f}ms "
+                    f"min={processing_stats['min_s']*1000:.2f}ms "
+                    f"max={processing_stats['max_s']*1000:.2f}ms "
+                    f"count={processing_stats['count']}"
                 )
                 disconnect_dt()
-                reset_overhead_buffer()
+                reset_logging_overhead_buffer()
+                reset_processing_overhead_buffer()
             except Exception as e:
                 logger.error(f"Round failed: {e}")
-                rows.append([r + 1, None, None, None, None])
+                rows.append([r + 1, None, None, None, None, None])
+            finally:
+                time.sleep(STABILIZATION_WAIT)
+                clear_mongo()  
 
     write_csv(
-        "experiment2_logging_overhead.csv",
-        ["round", "updates_per_sec", "avg_write_ms", "min_write_ms", "max_write_ms", "sample_count", "values"],
+        f"experiment2_logging_overhead{current_timestamp}.csv",
+        ["round", "updates_per_sec", "overhead_type", "avg_write_ms", "min_write_ms", "max_write_ms", "sample_count", "values"],
         rows
     )
 
@@ -388,12 +425,11 @@ def experiment_3(rounds: int):
     rows = []
 
     for n in EVENT_COUNTS:
-        set_message_limit(n)  
         for r in range(rounds):
             logger.info(f"--- N={n}, round={r+1}/{rounds} ---")
             try:
+                set_message_limit(n)  
                 restart_dt()
-                clear_mongo()
                 reconnect_dt()
                 time.sleep(STABILIZATION_WAIT)
                 start_pt()
@@ -430,9 +466,9 @@ def experiment_3(rounds: int):
                 rows.append([n, r + 1, None, None, None])
             finally:
                 time.sleep(STABILIZATION_WAIT)
-
+                clear_mongo()  
     write_csv(
-        "experiment3_odte_recovery.csv",
+        f"experiment3_odte_recovery_{current_timestamp}.csv",
         ["n_events", "round", "rebuild_time_s", "odte_recovery_time_s", "equal"],
         rows
     )
@@ -453,7 +489,46 @@ if __name__ == "__main__":
         "--rounds", type=int, default=10,
         help="Number of repetitions per configuration (default: 10)"
     )
+    parser.add_argument(
+        "--dt-port", type=int,
+        help="Port to DT endpoints", required=True
+    )
+    parser.add_argument(
+        "--pt-port", type=int,
+        help="Port to PT endpoints", required=True
+    )
+    parser.add_argument(
+        "--mongo-port", type=int,
+        help="Port to MongoDB", required=True
+    )
+    parser.add_argument(
+        "--mongo-user", type=str, 
+        help="MongoDB username", required=True
+    )
+    parser.add_argument(
+        "--mongo-password", type=str, 
+        help="MongoDB password", required=True
+    )
     args = parser.parse_args()
+
+
+    dt_port         : int = args.dt_port
+    pt_port         : int = args.pt_port
+    mongo_port      : int = args.mongo_port
+    mongo_user      : str = args.mongo_user
+    mongo_password  : str = args.mongo_password
+
+
+    DT_URL              : str   = f"http://localhost:{dt_port}"
+    PT_URL              : str   = f"http://localhost:{pt_port}"
+    MONGO_URL           : str   = f"mongodb://{mongo_user}:{mongo_password}@localhost:{mongo_port}"
+    MONGO_DB            : str   = "dt"
+    MONGO_COLLECTION    : str   = "events"
+
+
+    _mongo_client = pymongo.MongoClient(MONGO_URL)
+
+    current_timestamp = str(time.time()).replace(".", "_")
 
     if args.experiment == 1:
         experiment_1(args.rounds)
