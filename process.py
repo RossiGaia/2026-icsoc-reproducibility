@@ -68,6 +68,7 @@ class Processing:
         self.connection_buffer = connection_buffer
         self.processing_buffer = processing_buffer
         self.observations = collections.deque(maxlen=100)
+        self.processing_overhead_buffer = collections.deque(maxlen=10000)
         self.running = True
         self.conveyor_params = VirtualizedConveyorPlant()
         self.state_max_size = state_max_size
@@ -126,11 +127,28 @@ class Processing:
 
                 processing_time = time.time() - t0
                 snap["processing_time_s"] = processing_time
+                self.processing_overhead_buffer.append(processing_time)
 
                 self.processing_buffer.append(snap)
                 self._record_observation(snap, processing_time)
 
             logger.debug(f"time to elaborate the message: {processing_time}")
+
+    def get_processing_overhead_buffer(self) -> dict:
+        if len(self.processing_overhead_buffer) == 0:
+            return {"average_s": None, "max_s": None, "min_s": None, "count": 0}
+        values = list(self.processing_overhead_buffer)
+        average = sum(values) / len(values)
+        return {
+            "average_s": average,
+            "max_s": max(values),
+            "min_s": min(values),
+            "count": len(values),
+            "values": values,
+        }
+
+    def reset_processing_overhead_buffer(self):
+        self.processing_overhead_buffer.clear()
 
     def _increment_cycles(self):
         self.conveyor_params.total_cycles += 1

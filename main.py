@@ -240,6 +240,17 @@ def reset_logging_overhead():
     mqtt_connection.reset_logging_overhead_buffer()
     return jsonify({"status": "success"})
 
+@app.route("/processing_overhead", methods=["GET"])
+def get_processing_overhead():
+    stats = processing.get_processing_overhead_buffer()
+    return jsonify(stats)
+
+@app.route("/processing_overhead/reset", methods=["POST"])
+def reset_processing_overhead():
+    processing.reset_processing_overhead_buffer()
+    return jsonify({"status": "success"})
+
+
 @app.route("/restart", methods=["POST"])
 def restart():
     global mqtt_t, processing_t, mqtt_connection, processing, processing_buffer, connection_buffer, messages_buffer
