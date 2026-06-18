@@ -56,7 +56,7 @@ class MqttConnection:
         self.commit_seq_no_lock = threading.Lock()
 
     def new_client(self):
-        self.mqtt_client = mqtt.Client(CallbackAPIVersion.VERSION2)
+        self.mqtt_client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id="DT-1", clean_session=False)
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
 
