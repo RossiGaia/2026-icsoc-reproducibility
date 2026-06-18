@@ -248,7 +248,8 @@ class ConveyorPlant:
             self.mqtt_client.publish(self.mqtt_connection.mqtt_topic, payload)
             logger.debug(f"Seq_id: {seq_id}")
             time.sleep(1.0 / self.mqtt_connection.sensors_updates_per_second)
-
+        
+        self.mqtt_client.disconnect()
         self.mqtt_client.loop_stop()
 
 cnv1 = ConveyorPlant()
