@@ -270,7 +270,7 @@ class Processing:
 
         percentile = float(count / len(obs_list))
 
-        return max(percentile, 1.0)
+        return min(percentile, 1.0)
 
     def _compute_reliability(self, window_length_sec: int, expected_msg_sec: int):
         end_window_time = time.time()
@@ -289,7 +289,7 @@ class Processing:
 
         expected_msg_tot = window_length_sec * expected_msg_sec
 
-        return max(float(count / expected_msg_tot), 1.0)
+        return min(float(count / expected_msg_tot), 1.0)
 
     def _compute_availability(self):
         return 1.0
