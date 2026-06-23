@@ -136,7 +136,7 @@ class Processing:
 
     def get_processing_overhead_buffer(self) -> dict:
         if len(self.processing_overhead_buffer) == 0:
-            return {"average_s": None, "max_s": None, "min_s": None, "count": 0}
+            return {"average_s": None, "max_s": None, "min_s": None, "count": 0, "values": []}
         values = list(self.processing_overhead_buffer)
         average = sum(values) / len(values)
         return {
