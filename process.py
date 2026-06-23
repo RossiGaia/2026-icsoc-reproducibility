@@ -68,7 +68,7 @@ class Processing:
         self.connection_buffer = connection_buffer
         self.processing_buffer = processing_buffer
         self.observations = collections.deque(maxlen=100)
-        self.processing_overhead_buffer = collections.deque(maxlen=10000)
+        self.processing_overhead_buffer = collections.deque()
         self.running = True
         self.conveyor_params = VirtualizedConveyorPlant()
         self.state_max_size = state_max_size

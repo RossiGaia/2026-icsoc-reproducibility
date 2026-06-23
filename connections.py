@@ -31,7 +31,7 @@ class MqttConnection:
 
         self.connection_buffer = connection_buffer
         self.messages_buffer = messages_buffer
-        self.logging_overhead_buffer = collections.deque(maxlen=10000)
+        self.logging_overhead_buffer = collections.deque()
 
         self.mqtt_broker_url = mqtt_conf["broker_url"]
         self.mqtt_port = mqtt_conf["port"]

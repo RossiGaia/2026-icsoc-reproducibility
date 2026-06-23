@@ -46,7 +46,6 @@ confs = yaml.safe_load(open(conf_path))
 dt_name = confs["name"]
 flask_port = int(confs["flask"]["port"])
 process_conf = confs["process"]
-process_buffer_conf = process_conf["buffer"]["size"]
 process_burn_worker = process_conf["burn"]["workers"]
 process_burn_work = process_conf["burn"]["work"]
 process_do_periodic_checkpoints = process_conf["file_checkpoints"]["use"]
@@ -58,7 +57,6 @@ if process_do_periodic_checkpoints:
     process_periodic_checkpoints_file = process_conf["file_checkpoints"]["path"]
 
 connection_conf = confs["connections"]
-connection_buffer_conf = connection_conf["buffer"]["size"]
 connection_mqtt_conf = connection_conf["mqtt"]
 connection_mongo_conf = connection_conf["mongodb"]
 connection_mongo_url = connection_mongo_conf["url"]
@@ -125,9 +123,9 @@ signal.signal(signal.SIGTERM, graceful_shutdown)
 
 app = Flask(__name__)
 
-processing_buffer = collections.deque(maxlen=process_buffer_conf)
-connection_buffer = collections.deque(maxlen=connection_buffer_conf)
-messages_buffer = collections.deque(maxlen=connection_buffer_conf)
+processing_buffer = collections.deque()
+connection_buffer = collections.deque()
+messages_buffer = collections.deque(maxlen=100000)
 
 mqtt_connection = MqttConnection(
     connection_buffer=connection_buffer,
