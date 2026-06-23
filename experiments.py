@@ -50,7 +50,7 @@ ODTE_TIMEOUT        : float = 120.0
 
 # event counts used in experiments 1 and 3
 EVENT_COUNTS        : list  = [100, 200, 500, 1000, 2000, 5000, 10000]
-UPDATES_PER_SECOND  : list  = [1, 5, 10, 20, 50, 100, 200, 500, 1000]
+UPDATES_PER_SECOND  : list  = [1, 5, 10, 20, 50, 100, 200]
 
 # seconds to wait between rounds for the DT to stabilize
 STABILIZATION_WAIT  : float = 3.0
