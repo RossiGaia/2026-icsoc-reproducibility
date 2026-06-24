@@ -55,6 +55,8 @@ UPDATES_PER_SECOND  : list  = [1, 5, 10, 20, 50, 100, 200]
 # seconds to wait between rounds for the DT to stabilize
 STABILIZATION_WAIT  : float = 3.0
 
+EXPERIMENT2_EVENTS_NO = 500
+
 EXCLUDED_FIELDS = ["recv_timestamp", "processing_time_s", "key"]
 
 SORT_KEY = "commit_seq_no"
@@ -340,7 +342,7 @@ def experiment_2(rounds: int):
     """
     logger.info("=== Experiment 2: Runtime overhead of logging ===")
     rows = []
-    set_message_limit(1000)
+    set_message_limit(EXPERIMENT2_EVENTS_NO)
     for n in UPDATES_PER_SECOND:
         pt_set_updates_per_second(n)
         dt_set_updates_per_second(n)
@@ -351,7 +353,7 @@ def experiment_2(rounds: int):
                 reconnect_dt()
                 time.sleep(STABILIZATION_WAIT)
                 start_pt()
-                wait_for_n_events(1000)
+                wait_for_n_events(EXPERIMENT2_EVENTS_NO)
                 stop_pt()
                 logging_stats = get_logging_overhead_stats()
                 if logging_stats["count"] == 0:
