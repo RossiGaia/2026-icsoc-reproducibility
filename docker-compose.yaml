@@ -1,6 +1,6 @@
 services:
   dt:
-    build: .
+    build: ./digital_twin
     ports:
       - "5000"
     depends_on:
