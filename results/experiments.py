@@ -53,12 +53,20 @@ EVENT_COUNTS        : list  = [100, 200, 500, 1000, 2000, 5000, 10000]
 UPDATES_PER_SECOND  : list  = [1, 5, 10, 20, 50, 100, 200]
 
 # Determinants sizes
-DETERMINANT_SIZES_BYTES : list = [0, 512, 1024, 5120, 10240, 51200]
+DETERMINANT_SIZES_BYTES = [
+    0,          # baseline
+    10_240,     # 10KB
+    102_400,    # 100KB
+    512_000,    # 500KB
+    1_048_576,  # 1MB
+    5_242_880,  # 5MB
+    10_485_760, # 10MB
+]
 
 # seconds to wait between rounds for the DT to stabilize
 STABILIZATION_WAIT  : float = 3.0
 
-EXPERIMENT2_EVENTS_NO = 500
+EXPERIMENTS_EVENTS_NO = 500
 
 EXCLUDED_FIELDS = ["recv_timestamp", "processing_time_s", "key"]
 
@@ -365,7 +373,7 @@ def experiment_2(rounds: int):
     """
     logger.info("=== Experiment 2: Runtime overhead of logging ===")
     rows = []
-    set_message_limit(EXPERIMENT2_EVENTS_NO)
+    set_message_limit(EXPERIMENTS_EVENTS_NO)
     for n in UPDATES_PER_SECOND:
         pt_set_updates_per_second(n)
         dt_set_updates_per_second(n)
@@ -376,7 +384,7 @@ def experiment_2(rounds: int):
                 reconnect_dt()
                 time.sleep(STABILIZATION_WAIT)
                 start_pt()
-                wait_for_n_events(EXPERIMENT2_EVENTS_NO)
+                wait_for_n_events(EXPERIMENTS_EVENTS_NO)
                 stop_pt()
                 logging_stats = get_logging_overhead_stats()
                 if logging_stats["count"] == 0:
@@ -511,13 +519,13 @@ def experiment_4(rounds: int):
     """
     logger.info("=== Experiment 4: Determinants document sizes vs MongoDB write latency ===")
     rows = []
-    set_message_limit(EXPERIMENT2_EVENTS_NO)
+    set_message_limit(EXPERIMENTS_EVENTS_NO)
     pt_set_updates_per_second(5)
     dt_set_updates_per_second(5)
 
     for size in DETERMINANT_SIZES_BYTES:
         for r in range(rounds):
-            logger.info(f"--- Determinant size={size} bytes, round={r+1}/{rounds} ---")
+            logger.info(f"--- Determinant target size={size} bytes, round={r+1}/{rounds} ---")
             try:
                 restart_dt()
                 time.sleep(STABILIZATION_WAIT)
@@ -525,7 +533,7 @@ def experiment_4(rounds: int):
                 reconnect_dt()
                 time.sleep(STABILIZATION_WAIT)
                 start_pt()
-                wait_for_n_events(EXPERIMENT2_EVENTS_NO)
+                wait_for_n_events(EXPERIMENTS_EVENTS_NO)
                 stop_pt()
                 disconnect_dt()
                 documents_size_stats = get_documents_size_stats()
@@ -534,8 +542,8 @@ def experiment_4(rounds: int):
                     continue
                 logger.info(
                     f"  avg={documents_size_stats['average_bytes']:.1f} bytes "
-                    f"min={documents_size_stats['min_bytes']*1000:.2f} bytes "
-                    f"max={documents_size_stats['max_bytes']*1000:.2f} bytes "
+                    f"min={documents_size_stats['min_bytes']:.1f} bytes "
+                    f"max={documents_size_stats['max_bytes']:.1f} bytes "
                     f"count={documents_size_stats['count']}"
                 )
                 logging_stats = get_logging_overhead_stats()
@@ -566,11 +574,11 @@ def experiment_4(rounds: int):
                 time.sleep(STABILIZATION_WAIT)
                 clear_mongo()
 
-        write_csv(
-            f"experiment4_determinant_size_{current_timestamp}.csv",
-            ["target_size_bytes", "actual_size_bytes", "round", "logging_avg", "logging_min", "logging_max", "logging_count", "values"],
-            rows
-        )
+    write_csv(
+        f"experiment4_determinant_size_{current_timestamp}.csv",
+        ["target_size_bytes", "actual_size_bytes", "round", "logging_avg", "logging_min", "logging_max", "logging_count", "values"],
+        rows
+    )
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

@@ -86,8 +86,8 @@ class MqttConnection:
         }
 
         if self.determinant_padding_size_bytes > 0:
-            data["padding"] = self._compute_padding(data, self.determinant_padding_size_bytes)
-            self.determinants_document_sizes_buffer.append(len(bson.encode(data)))
+            data["padding"] = self._compute_padding(data)
+        self.determinants_document_sizes_buffer.append(len(bson.encode(data)))
 
         write_start_time = time.time()
         # pessimist logging
@@ -103,9 +103,9 @@ class MqttConnection:
             logger.error(f"Failed to persist determinant: {e}. Event will not be processed.")
             return
         
-    def _compute_padding(self, data: dict, target_size_bytes: int) -> str:
+    def _compute_padding(self, data: dict) -> str:
         current_size = len(bson.encode(data))
-        padding_needed = target_size_bytes - current_size
+        padding_needed = self.determinant_padding_size_bytes - current_size
         if padding_needed <= 0:
             return ""
         return "0" * padding_needed
