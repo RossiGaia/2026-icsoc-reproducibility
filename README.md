@@ -45,5 +45,5 @@ pip install -r requirements.txt
 To run the script:
 ```
 cd results
-python3 experiments.py --experiment <choose 1,2,3> --rounds <rounds_no> --dt-port <dt_port> --pt-port <pt_port> --mongo-port <mongo_port> --mongo-user <mongo_user> --mongo-password <mongo_password> 
+python3 experiments.py --experiment <choose 1,2,3,4> --rounds <rounds_no> --dt-port <dt_port> --pt-port <pt_port> --mongo-port <mongo_port> --mongo-user <mongo_user> --mongo-password <mongo_password> 
 ```
