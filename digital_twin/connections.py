@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 import json
+import bson
 import random
 import string
 import pymongo
@@ -40,6 +41,8 @@ class MqttConnection:
         self.mongo_db = mongo_db
         self.mongo_collection = mongo_collection
         self.mongo_client: pymongo.MongoClient
+        self.determinant_padding_size_bytes = 0
+        self.determinants_document_sizes_buffer = collections.deque(maxlen=10000)
 
         try:
             self.mongo_client = pymongo.MongoClient(self.mongo_url)
@@ -71,6 +74,7 @@ class MqttConnection:
             commit_seq_no = self.commit_seq_no
             self.commit_seq_no += 1
 
+
         data = {
             "topic": msg.topic,
             "payload": json.loads(msg.payload.decode("UTF-8")),
@@ -80,6 +84,10 @@ class MqttConnection:
             ),
             "commit_seq_no": commit_seq_no,
         }
+
+        if self.determinant_padding_size_bytes > 0:
+            data["padding"] = self._compute_padding(data, self.determinant_padding_size_bytes)
+            self.determinants_document_sizes_buffer.append(len(bson.encode(data)))
 
         write_start_time = time.time()
         # pessimist logging
@@ -95,6 +103,17 @@ class MqttConnection:
             logger.error(f"Failed to persist determinant: {e}. Event will not be processed.")
             return
         
+    def _compute_padding(self, data: dict, target_size_bytes: int) -> str:
+        current_size = len(bson.encode(data))
+        padding_needed = target_size_bytes - current_size
+        if padding_needed <= 0:
+            return ""
+        return "0" * padding_needed
+
+
+    def set_determinant_padding_size_bytes(self, size: int):
+        self.determinant_padding_size_bytes = size
+        logger.info(f"Determinant padding size set to {size}.")
 
     def run(self):
         self.new_client()
@@ -132,6 +151,22 @@ class MqttConnection:
 
     def reset_logging_overhead_buffer(self):
         self.logging_overhead_buffer.clear()
+
+    def get_determinants_document_sizes_stats(self) -> dict:
+        if len(self.determinants_document_sizes_buffer) == 0:
+            return {"average_bytes": None, "max_bytes": None, "min_bytes": None, "count": 0}
+        values = list(self.determinants_document_sizes_buffer)
+        average = sum(values) / len(values)
+        return {
+            "average_bytes": average,
+            "max_bytes": max(values),
+            "min_bytes": min(values),
+            "count": len(values),
+            "values": values,
+        }
+    
+    def reset_determinants_document_sizes_buffer(self):
+        self.determinants_document_sizes_buffer.clear()
 
     def reset(self):
         with self.commit_seq_no_lock:

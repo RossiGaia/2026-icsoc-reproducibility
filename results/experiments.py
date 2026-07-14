@@ -52,6 +52,9 @@ ODTE_TIMEOUT        : float = 120.0
 EVENT_COUNTS        : list  = [100, 200, 500, 1000, 2000, 5000, 10000]
 UPDATES_PER_SECOND  : list  = [1, 5, 10, 20, 50, 100, 200]
 
+# Determinants sizes
+DETERMINANT_SIZES_BYTES : list = [0, 512, 1024, 5120, 10240, 51200]
+
 # seconds to wait between rounds for the DT to stabilize
 STABILIZATION_WAIT  : float = 3.0
 
@@ -186,6 +189,22 @@ def check_state_equality(state1: dict, state2: dict) -> tuple[bool, float, dict]
 # ---------------------------------------------------------------------------
 # DT endpoint helpers
 # ---------------------------------------------------------------------------
+def dt_set_determinant_padding_size(padding_size: int):
+    resp = requests.post(
+        f"{DT_URL}/determinant_padding_size",
+        json={"padding_size": padding_size},
+        timeout=5
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Set determinant padding size failed: {resp.text}")
+    logger.info(f"Determinant padding size set to {padding_size}.")
+
+def reset_determinants_document_sizes_buffer():
+    resp = requests.post(f"{DT_URL}/determinants_document_sizes/reset", timeout=5)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Reset determinants document sizes buffer failed: {resp.text}")
+    logger.info("Determinants document sizes buffer reset.")
+
 def dt_set_updates_per_second(updates_per_second: int):
     resp = requests.post(
     f"{DT_URL}/updates_per_second",
@@ -253,6 +272,10 @@ def get_logging_overhead_stats() -> dict:
 
 def get_processing_overhead_stats() -> dict:
     resp = requests.get(f"{DT_URL}/processing_overhead", timeout=5)
+    return resp.json()
+
+def get_documents_size_stats() -> dict:
+    resp = requests.get(f"{DT_URL}/determinants_document_sizes", timeout=5)
     return resp.json()
 
 def wait_for_odte_recovery() -> float:
@@ -476,6 +499,79 @@ def experiment_3(rounds: int):
     )
 
 # ---------------------------------------------------------------------------
+# Experiment 4: Determinants document sizes vs MongoDB write latency
+# ---------------------------------------------------------------------------
+def experiment_4(rounds: int):
+    """
+    For each determinant size and each round:
+      - Set DT determinant padding size
+      - Clear MongoDB
+      - Connect DT to PT, accumulate events, disconnect
+      - Collect MongoDB write latency stats
+    """
+    logger.info("=== Experiment 4: Determinants document sizes vs MongoDB write latency ===")
+    rows = []
+    set_message_limit(EXPERIMENT2_EVENTS_NO)
+    pt_set_updates_per_second(5)
+    dt_set_updates_per_second(5)
+
+    for size in DETERMINANT_SIZES_BYTES:
+        for r in range(rounds):
+            logger.info(f"--- Determinant size={size} bytes, round={r+1}/{rounds} ---")
+            try:
+                restart_dt()
+                time.sleep(STABILIZATION_WAIT)
+                dt_set_determinant_padding_size(size)
+                reconnect_dt()
+                time.sleep(STABILIZATION_WAIT)
+                start_pt()
+                wait_for_n_events(EXPERIMENT2_EVENTS_NO)
+                stop_pt()
+                disconnect_dt()
+                documents_size_stats = get_documents_size_stats()
+                if documents_size_stats["count"] == 0:
+                    logger.warning("No document size samples collected yet.")
+                    continue
+                logger.info(
+                    f"  avg={documents_size_stats['average_bytes']:.1f} bytes "
+                    f"min={documents_size_stats['min_bytes']*1000:.2f} bytes "
+                    f"max={documents_size_stats['max_bytes']*1000:.2f} bytes "
+                    f"count={documents_size_stats['count']}"
+                )
+                logging_stats = get_logging_overhead_stats()
+                if logging_stats["count"] == 0:
+                    logger.warning("No logging overhead samples collected yet.")
+                    continue
+                rows.append([
+                    size,
+                    round(documents_size_stats["average_bytes"], 1),
+                    r + 1,
+                    round(logging_stats["average_s"] * 1000, 4),  # convert to ms
+                    round(logging_stats["min_s"] * 1000, 4),
+                    round(logging_stats["max_s"] * 1000, 4),
+                    logging_stats["count"],
+                    logging_stats["values"]
+                ])
+                logger.info(
+                    f"  avg={logging_stats['average_s']*1000:.2f}ms "
+                    f"min={logging_stats['min_s']*1000:.2f}ms "
+                    f"max={logging_stats['max_s']*1000:.2f}ms "
+                    f"count={logging_stats['count']}"
+                )
+                reset_determinants_document_sizes_buffer()
+                reset_logging_overhead_buffer()
+            except Exception as e:
+                logger.error(f"Round failed: {e}")
+            finally:
+                time.sleep(STABILIZATION_WAIT)
+                clear_mongo()
+
+        write_csv(
+            f"experiment4_determinant_size_{current_timestamp}.csv",
+            ["target_size_bytes", "actual_size_bytes", "round", "logging_avg", "logging_min", "logging_max", "logging_count", "values"],
+            rows
+        )
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -484,8 +580,8 @@ if __name__ == "__main__":
         description="DT State Reproducibility experiment runner."
     )
     parser.add_argument(
-        "--experiment", type=int, required=True, choices=[1, 2, 3],
-        help="Which experiment to run (1, 2, or 3)"
+        "--experiment", type=int, required=True, choices=[1, 2, 3, 4],
+        help="Which experiment to run (1, 2, 3, or 4)"
     )
     parser.add_argument(
         "--rounds", type=int, default=10,
@@ -538,3 +634,5 @@ if __name__ == "__main__":
         experiment_2(args.rounds)
     elif args.experiment == 3:
         experiment_3(args.rounds)
+    elif args.experiment == 4:
+        experiment_4(args.rounds)

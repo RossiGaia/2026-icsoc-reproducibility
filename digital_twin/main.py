@@ -307,6 +307,23 @@ def set_odte_updates_per_second():
     logger.info(f"Updates per second set to {updates_per_second}.")
     return jsonify({"status": "success", "updates_per_second": updates_per_second})
 
+@app.route("/determinant_padding_size", methods=["POST"])
+def set_determinant_padding_size():
+    body = request.get_json()
+    padding_size = int(body.get("padding_size"))
+    mqtt_connection.set_determinant_padding_size_bytes(padding_size)
+    logger.info(f"Determinant padding size set to {padding_size}.")
+    return jsonify({"status": "success", "padding_size": padding_size})
+
+@app.route("/determinants_document_sizes", methods=["GET"])
+def get_determinants_document_sizes():
+    stats = mqtt_connection.get_determinants_document_sizes_stats()
+    return jsonify(stats)
+
+@app.route("/determinants_document_sizes/reset", methods=["POST"])
+def reset_determinants_document_sizes():
+    mqtt_connection.reset_determinants_document_sizes_buffer()
+    return jsonify({"status": "success"})
 
 if __name__ == "__main__":
     logger.debug("Started main.")
