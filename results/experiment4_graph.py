@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 plt.rcParams.update({
     'font.family': 'serif',
-    'font.size': 10,
+    'font.size': 20,
     'axes.spines.top': False,
     'axes.spines.right': False,
     'axes.grid': True,
