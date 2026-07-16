@@ -31,9 +31,9 @@ ax.errorbar(rates, s_proc['mean'], yerr=s_proc['std'],
             fmt='o-', color='#2c6fad', linewidth=1.5, markersize=4,
             capsize=3, capthick=1.2, label='Transition function')
 
-ax.set_xlabel('PT update rate (events/s)', fontsize=9)
-ax.set_ylabel('Latency per event (ms)', fontsize=9)
-ax.set_title('RQ2 — Per-Event Latency', fontsize=10)
+ax.set_xlabel('PT update rate (updates/s)', fontsize=9)
+ax.set_ylabel('Latency per update (ms)', fontsize=9)
+ax.set_title('RQ2 — Per-Update Latency', fontsize=10)
 ax.set_xscale('log')
 ax.set_xticks(rates)
 ax.set_xticklabels([str(r) for r in rates], rotation=30, fontsize=8)
