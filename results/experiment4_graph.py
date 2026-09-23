@@ -12,7 +12,7 @@ plt.rcParams.update({
     'grid.linestyle': ':',
 })
 
-df = pd.read_csv('experiment4_determinant_size_1784024742_577253.csv')
+df = pd.read_csv('experiment4_determinant_size_1790095801_309106.csv')
 
 # logging_avg is already in ms (stored as ms in csv)
 s = df.groupby('actual_size_bytes')['logging_avg'].agg(['mean','std']).reset_index()

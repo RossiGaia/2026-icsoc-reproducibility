@@ -12,7 +12,7 @@ plt.rcParams.update({
     'grid.linestyle': ':',
 })
 
-df = pd.read_csv('experiment2_logging_overhead1782203981_451135.csv')
+df = pd.read_csv('experiment2_logging_overhead1790095728_740147.csv')
 
 log_df  = df[df['overhead_type'] == 'logging']
 proc_df = df[df['overhead_type'] == 'processing']
